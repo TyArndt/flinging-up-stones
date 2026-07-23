@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "flinging-up-stones",
+  "compatibility_date": "2026-07-18",
+  "observability": {
+    "enabled": true
+  },
+  "assets": {
+    "directory": "."
+  },
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "routes": [
+    { "pattern": "flinging-up-stones.ty-arr.com", "custom_domain": true }
+  ]
+}

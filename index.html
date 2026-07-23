@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Flinging Up Stones — Duck Hunt</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.70.0/phaser.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fredoka:wght@500;700&family=DM+Mono:wght@500&display=swap');
+
+  :root{
+    --dusk-deep:#241435;
+    --dusk-mid:#5b2a5e;
+    --sun:#ff9d5c;
+    --sun-core:#ffd27a;
+    --grass-dark:#122318;
+    --grass-mid:#1c3a24;
+    --wood:#5c3a21;
+    --wood-dark:#3c2414;
+    --cream:#f4ecd8;
+    --miss:#d9524a;
+    --hit:#8fbf6c;
+  }
+  html,body{
+    margin:0; height:100%;
+    background: radial-gradient(ellipse at 50% 0%, #3a2050 0%, #150d20 70%);
+    font-family:'Fredoka', sans-serif;
+    display:flex; align-items:center; justify-content:center;
+    overflow:hidden;
+  }
+  #wrap{
+    position:relative;
+    box-shadow: 0 30px 80px -20px rgba(0,0,0,0.8);
+    border-radius:6px;
+    overflow:hidden;
+    border: 3px solid var(--wood-dark);
+  }
+  #game canvas{ display:block; cursor:crosshair; }
+
+  /* wooden sign HUD */
+  #hud{
+    position:absolute; top:14px; left:14px; right:14px;
+    display:flex; justify-content:space-between; align-items:stretch;
+    pointer-events:none;
+    font-family:'Fredoka', sans-serif;
+  }
+  .sign{
+    background: linear-gradient(180deg, var(--wood) 0%, var(--wood-dark) 100%);
+    border:2px solid rgba(0,0,0,0.4);
+    border-radius:8px;
+    padding:8px 16px;
+    box-shadow: 0 4px 0 rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.08);
+    color: var(--cream);
+  }
+  .sign .label{
+    font-family:'DM Mono', monospace;
+    font-size:10px;
+    letter-spacing:2px;
+    opacity:0.65;
+    text-transform:uppercase;
+  }
+  .sign .value{
+    font-size:22px;
+    font-weight:700;
+    line-height:1.1;
+  }
+  #lives .value{ letter-spacing:4px; }
+
+  #center-msg{
+    position:absolute; top:50%; left:50%; transform:translate(-50%,-52%);
+    text-align:center;
+    color:var(--cream);
+    pointer-events:none;
+    text-shadow: 0 3px 0 rgba(0,0,0,0.5);
+  }
+  #center-msg .title{
+    font-size:46px; font-weight:700; letter-spacing:1px;
+  }
+  #center-msg .sub{
+    font-family:'DM Mono', monospace;
+    font-size:13px;
+    letter-spacing:3px;
+    text-transform:uppercase;
+    opacity:0.85;
+    margin-top:6px;
+  }
+  #center-msg .hint{
+    margin-top:22px;
+    display:inline-block;
+    padding:10px 22px;
+    background: var(--sun);
+    color:#2a1608;
+    border-radius:30px;
+    font-weight:700;
+    font-size:14px;
+    pointer-events:all;
+    cursor:pointer;
+    box-shadow: 0 4px 0 #b5622b;
+  }
+  #center-msg.hidden{ display:none; }
+
+  #round-banner{
+    position:absolute; top:70px; left:50%; transform:translate(-50%,-20px);
+    background: var(--wood-dark);
+    color: var(--cream);
+    padding:6px 20px;
+    border-radius:20px;
+    font-family:'DM Mono', monospace;
+    font-size:12px;
+    letter-spacing:3px;
+    text-transform:uppercase;
+    opacity:0;
+    transition: opacity .4s ease, transform .4s ease;
+    pointer-events:none;
+    border:1px solid rgba(255,255,255,0.15);
+  }
+  #round-banner.show{ opacity:1; transform:translate(-50%,0); }
+</style>
+</head>
+<body>
+
+<div id="wrap">
+  <div id="game"></div>
+
+  <div id="hud">
+    <div class="sign" id="score">
+      <div class="label">Score</div>
+      <div class="value">0</div>
+    </div>
+    <div class="sign" id="round">
+      <div class="label">Round</div>
+      <div class="value">1</div>
+    </div>
+    <div class="sign" id="stones">
+      <div class="label">Stones</div>
+      <div class="value">●●●</div>
+    </div>
+    <div class="sign" id="lives">
+      <div class="label">Flock Left</div>
+      <div class="value">♦♦♦</div>
+    </div>
+  </div>
+
+  <div id="round-banner"></div>
+
+  <div id="center-msg">
+    <div class="title">Flinging Up Stones</div>
+    <div class="sub"></div>
+    <div class="hint" id="start-btn">Click to gather your stones</div>
+  </div>
+</div>
+
+<script>
+const W = 900, H = 620;
+
+const scoreEl = document.querySelector('#score .value');
+const roundEl = document.querySelector('#round .value');
+const stonesEl = document.querySelector('#stones .value');
+const livesEl = document.querySelector('#lives .value');
+const centerMsg = document.getElementById('center-msg');
+const roundBanner = document.getElementById('round-banner');
+
+function showBanner(text){
+  roundBanner.textContent = text;
+  roundBanner.classList.add('show');
+  clearTimeout(showBanner._t);
+  showBanner._t = setTimeout(()=> roundBanner.classList.remove('show'), 1400);
+}
+
+// All sound effects are synthesized with the Web Audio API (no audio files),
+// matching the procedurally-generated art. The context is created lazily since
+// browsers require it to start from a user gesture.
+let audioCtx = null;
+function getAudioCtx(){
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+
+function playThrowSound(){
+  const ctx = getAudioCtx();
+  const now = ctx.currentTime;
+
+  // short decaying noise burst swept through a bandpass filter = stone "whip"
+  const bufferSize = Math.floor(ctx.sampleRate * 0.15);
+  const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i=0;i<bufferSize;i++){
+    data[i] = (Math.random()*2-1) * (1 - i/bufferSize);
+  }
+  const noise = ctx.createBufferSource();
+  noise.buffer = buffer;
+
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'bandpass';
+  filter.Q.value = 1.2;
+  filter.frequency.setValueAtTime(2400, now);
+  filter.frequency.exponentialRampToValueAtTime(500, now + 0.12);
+
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0.5, now);
+  gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+
+  noise.connect(filter).connect(gain).connect(ctx.destination);
+  noise.start(now);
+  noise.stop(now + 0.16);
+}
+
+function playDogLaughSound(){
+  const ctx = getAudioCtx();
+  const now = ctx.currentTime;
+
+  // four short "heh" blips, alternating pitch, mocking laugh cadence
+  const notes = [340, 300, 340, 300];
+  notes.forEach((freq, i) => {
+    const t = now + i*0.16;
+    const osc = ctx.createOscillator();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(freq, t);
+    osc.frequency.exponentialRampToValueAtTime(freq*0.7, t + 0.09);
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(0.22, t + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.1);
+
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(t);
+    osc.stop(t + 0.12);
+  });
+}
+
+class DuskFlight extends Phaser.Scene {
+  constructor(){ super('main'); }
+
+  preload(){
+    // Build all art procedurally so there are no external asset dependencies,
+    // except the duck's head, which is a real face. Loaded directly into the
+    // texture manager (not the file loader/XHR queue) since that's the
+    // reliable way to bring in a base64 data URI without stalling load.
+    this.textures.addBase64('player_guy', 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACEAAAApCAMAAACMabAwAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAALoUExURYBhSXVUQXlKN1NEOtKie/vBkvq/keqsgu2bbPSXZrp4VopnVO22ivm7jPSkdeyTY9WSbMuLcmBLQqaLeeKrgvSpfOOddcmGZpR7bqqJa9yof/rGmeadgbt8ZJt6a92qgrqCaiE2OfGcbOmbdz1AQFpEN/W+kfGfcOKVc9SMdcd9Z/W7jkMzLPOrgeaUafqsfNuZbmhFOaaFZ/SkeW1DM96ccmtKPIxrUXhTPdqmfeyxh+yVcoROOzsjHCAMEA8PFWk8MbR0XPK1iu2ieuOkfKdpVJdbR4lbRbZpUIZWPpNiTJVnWJFVQyIjJKuDZZx4WoNiUl02MWM9Mlc4K0U3K25ALdqJZkYnGmNDMzAME618XeOKZXY9MKp2V7mScRcTE4I5KqNYOTMVCgABA3thSiYjHppZOrVnSCwtKmZSQqhnTH1DLBsGB7aGZ9F9XlktJeSFXuqmj/PBlUQ5NVUjGGg3J8t4VNOEWxwhIzMtLNR9YkIrIsSNa4eFg/j18Xpya8NlSOZ6Vph5Y8Z6Ts2DWUUqHtR8V9mGWyEmKC4xL9+0ijEVEf3No+/OqfzbuurDmui2izg0K0pCOzAABOK0ivq2i56CZdmvio9PQP/LnqWEacSSbsuMa1RCMu2peqRjSXg4K8iXdcSbdPq0hysvMWdoZs+riGBRPm5aRMJqUs2gfC1OVjk5RiU2SDQfEotnTpVpSSEPDrqQbbSZh5eEeVstJHZDNmItJNGUdHlWR3tiVqqLcXl5fExOUKWOgpZPQE8sIGIpEZFPPnlcUYl1aVdXVqVrZC4YFWxURKOGdcexosKomqV7ZioWD4RvYvn17OfZzTUhGXRqZUpGRMy9s7umm1s1JcSejd6jlumll9qfk7aNfYtyZKmmpJmSjbSekZqDdayVitPBtoxWQtG/tZmXldrMw/Tv676qoNzQytC8rsy3qqmTh9XGvYmAes7BukxQUc/KyHtcS6uaksW/vWhgXWFcWAAAAD1tud4AAAD4dFJOU/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8AKM62NwAAAAlwSFlzAAAOwQAADsEBuJFr7QAAABl0RVh0U29mdHdhcmUAUGFpbnQuTkVUIDUuMS4xMhMBR3QAAAC4ZVhJZklJKgAIAAAABQAaAQUAAQAAAEoAAAAbAQUAAQAAAFIAAAAoAQMAAQAAAAIAAAAxAQIAEQAAAFoAAABphwQAAQAAAGwAAAAAAAAA2XYBAOgDAADZdgEA6AMAAFBhaW50Lk5FVCA1LjEuMTIAAAMAAJAHAAQAAAAwMjMwAaADAAEAAAABAAAABaAEAAEAAACWAAAAAAAAAAIAAQACAAQAAABSOTgAAgAHAAQAAAAwMTAwAAAAAIa7MFa01AGwAAADzklEQVQ4T2P4jgAMEMDIxMSELApnMbOwsIIAGzsHJxcXM6YKbh4eNrAKVjZePn4BQSF0FcIiEGkw4BXlEBOXQFUhKSWNpAKkREZWDlmFpDyKAlZWXg4xGQVFZBVSqApYeZU4lLlUECpURdTQVLDyqmtoaiFUiGijK2BlVefX0NTBq0KXQ08AvwpWfX4DQ5gKI2hQoQJjfgMtE5gKdEkwMOY31TSDqjAHi0izIsIExNLnENOwQFbBJmUpJWIFlrcSkZKSYtPWteawQVYhYmtn7+AIcrKTo4O9na0VK6+zCyMjRIWNMqu0i6Orm4WFu6OTtJWHu6eXt4+PlDSbHiihMHz39fXU9fMPCAwKCg6xDdXQDwsMD44wDI5k8I+Kjonx/c7g6xYb5xefkJiYlJScIpmalp6WIZmZnJSUmJWdk5Ub5erLkJGna5kfn1cQXaiaLFlUXFJaoirtn6xaGF1Qllwqr19ewVBpqVGVVy1SU1tXnyxZFNLQ2MBc1JRcX1fb3NLaVhXd3sHQ2cVqVdbd1dPb1z9BrWhiOWfzJOmi/v6+XjaWyW1OrFIdDJ1Tpob5cE2b3iMtLT1lmiM7r9iMaUUzZ86UZpk120dg6vQKhowpvHPmzsvNrampmR01X5d1pnbZAr+FNbNn+y1yChFfLLKEYemyInlVNelFy1esWOFqDQpcjpXuK1asyGRhdQmxdFr1neH76kVdc3lY2dhY1YrYq6by8i6e58FexMbKxrq4qnpK3JrvDN/XLpqyLoqHlZVNdj0jU5aCbNYGE0avOazS+tFuG602dYJCfbPkllni7NqCNltDbbYybdvealK6fcYONrH0nbt2Q2Juz97N++bPcdl/IMiLa0PpQabYWM/8A4fYxWccPnIUGrfFZsLHZOcwdVdvEBNROLZQTcB93XETcUf3E0dhKr7rnDx1+ozJ2W3Z586frzt/YeeCrRcZZ20+aXYJnpIvX7kqYXjNfIfLqus3bt663dLOdSLY7M5JCYSKu/fuH4nY16RgymfqbOxsyt82n/HwgTsPLiFUfL+3Zd+WU8Le88unSEmJWJanRex6uPPOObACqIqjhx9eOfXo4c7gx9e2b1/HGBGw+ck+biGQO2Eqvj+99+zU8yty3KHhrdU5wRYvXp5+Vb8HIgVV8f3p05fPnr2+//IN44kjjC/ePrry7i5UBqbi+9O7b18+e3vhfsDhLSevPnl/7ylMAq7i+4ePV16/PDXr066HrwM+f4GUHagqvu/dsu/NW7nQc2/ffz26FCGMpOL7pEmTvhXbFh+9jCT2/TsAuE6IBXjlmdcAAAAASUVORK5CYII=');
+
+    // Build the rest of the art procedurally so there are no other external asset dependencies.
+    this.buildTextures();
+  }
+
+  buildTextures(){
+    const g = this.make.graphics({x:0,y:0,add:false});
+
+    // Duck body only (no head — the real face image gets composited on as the head
+    // in a container, so the neck stub here is drawn short so it tucks under it).
+    const duckColors = { body:0x3b2a20, belly:0xc98a3d, wing:0x6b4a2c, neck:0x3b2a20 };
+    const drawDuckBody = (wingUp) => {
+      g.clear();
+      // body
+      g.fillStyle(duckColors.body, 1);
+      g.fillEllipse(26, 22, 40, 22);
+      // belly patch
+      g.fillStyle(duckColors.belly, 1);
+      g.fillEllipse(22, 27, 24, 12);
+      // short neck stub reaching toward the head position
+      g.fillStyle(duckColors.neck, 1);
+      g.fillEllipse(44, 14, 14, 14);
+      // wing
+      g.fillStyle(duckColors.wing, 1);
+      if (wingUp) g.fillEllipse(20, 12, 22, 12);
+      else g.fillEllipse(22, 26, 24, 10);
+      // tail feather
+      g.fillStyle(duckColors.body, 1);
+      g.fillTriangle(-2,18, -12,10, 2,26);
+    };
+    drawDuckBody(true);
+    g.generateTexture('duck_body_up', 60, 40);
+    drawDuckBody(false);
+    g.generateTexture('duck_body_down', 60, 40);
+
+    // Falling duck body (wings tucked, tumbling)
+    g.clear();
+    g.fillStyle(duckColors.body, 1);
+    g.fillEllipse(24,20,36,20);
+    g.fillStyle(duckColors.belly, 1);
+    g.fillEllipse(22,25,20,10);
+    g.fillStyle(duckColors.neck, 1);
+    g.fillEllipse(40,12,12,12);
+    g.fillStyle(duckColors.wing, 1);
+    g.fillEllipse(14,14,14,20);
+    g.generateTexture('duck_body_fall', 56, 36);
+
+    // laughing dog, two frames (mouth closed / mouth open, mocking laugh)
+    const drawDog = (mouthOpen) => {
+      g.clear();
+      // tail, wagging up
+      g.fillStyle(0x8a5a2b, 1);
+      g.fillEllipse(74, 46, 12, 22);
+      // body
+      g.fillEllipse(42, 58, 54, 30);
+      // back leg
+      g.fillStyle(0x6b4420, 1);
+      g.fillEllipse(24, 74, 16, 12);
+      // head
+      g.fillStyle(0x8a5a2b, 1);
+      g.fillCircle(38, 28, 21);
+      // ears, floppy
+      g.fillStyle(0x5c3a21, 1);
+      g.fillEllipse(18, 24, 13, 24);
+      g.fillEllipse(58, 24, 13, 24);
+      // snout
+      g.fillStyle(0xd9a441, 1);
+      g.fillEllipse(38, 37, 19, 13);
+      // nose
+      g.fillStyle(0x1a1208, 1);
+      g.fillEllipse(38, 32, 6, 5);
+      // eyes, squinted happy (thin ellipses)
+      g.fillStyle(0x1a1208, 1);
+      g.fillEllipse(29, 22, 5, 2.4);
+      g.fillEllipse(47, 22, 5, 2.4);
+      // eyebrow-ish crinkle above eyes for "mocking laugh" look
+      g.fillStyle(0x5c3a21, 1);
+      g.fillEllipse(29, 17, 6, 2);
+      g.fillEllipse(47, 17, 6, 2);
+      // mouth
+      g.fillStyle(0x3c2414, 1);
+      if (mouthOpen){
+        g.fillEllipse(38, 43, 15, 11);
+        g.fillStyle(0xd9524a, 1);
+        g.fillEllipse(38, 47, 8, 6);
+      } else {
+        g.fillEllipse(38, 40, 11, 4);
+      }
+    };
+    drawDog(false);
+    g.generateTexture('dog_laugh1', 90, 86);
+    drawDog(true);
+    g.generateTexture('dog_laugh2', 90, 86);
+
+    // sun disc
+    g.clear();
+    g.fillStyle(0xffd27a, 1);
+    g.fillCircle(60,60,60);
+    g.generateTexture('sun', 120, 120);
+
+    // cloud puff
+    g.clear();
+    g.fillStyle(0xffffff, 0.5);
+    g.fillEllipse(30,20,60,26);
+    g.fillEllipse(60,14,44,22);
+    g.fillEllipse(10,16,36,18);
+    g.generateTexture('cloud', 90, 40);
+
+    // reed/cattail for foreground silhouette
+    g.clear();
+    g.fillStyle(0x0d1c12, 1);
+    g.fillRect(3,0,3,90);
+    g.fillEllipse(4,10,9,20);
+    g.generateTexture('reed', 10, 90);
+
+    // stone impact puff
+    g.clear();
+    g.fillStyle(0xffe9a8, 1);
+    for (let i=0;i<8;i++){
+      const a = i/8 * Math.PI*2;
+      g.fillTriangle(20,20, 20+Math.cos(a)*20, 20+Math.sin(a)*20, 20+Math.cos(a+0.35)*10, 20+Math.sin(a+0.35)*10);
+    }
+    g.generateTexture('impact', 40, 40);
+
+    g.destroy();
+  }
+
+  create(){
+    // ---- Sky gradient (deep dusk purple -> warm orange horizon) ----
+    const sky = this.add.graphics();
+    sky.fillGradientStyle(0x241435, 0x241435, 0x8a3d5e, 0xff9d5c, 1);
+    sky.fillRect(0,0,W,H*0.72);
+
+    // sun near horizon
+    this.sun = this.add.image(W*0.78, H*0.52, 'sun').setAlpha(0.9).setScale(1.1);
+    this.sun.setTint(0xffb877);
+    this.sunGlow = this.add.image(W*0.78, H*0.52, 'sun').setAlpha(0.25).setScale(2.2).setTint(0xff9d5c);
+
+    // drifting clouds
+    this.clouds = [];
+    for (let i=0;i<4;i++){
+      const c = this.add.image(Phaser.Math.Between(0,W), Phaser.Math.Between(30, H*0.4), 'cloud')
+        .setAlpha(0.35).setScale(Phaser.Math.FloatBetween(0.6,1.3));
+      c.speed = Phaser.Math.FloatBetween(4,10);
+      this.clouds.push(c);
+    }
+
+    // far tree line (silhouette)
+    const treeline = this.add.graphics();
+    treeline.fillStyle(0x1a0f28, 1);
+    treeline.fillRect(0, H*0.66, W, 10);
+    for (let x=-20;x<W+20;x+=34){
+      const hgt = Phaser.Math.Between(18,40);
+      treeline.fillTriangle(x, H*0.66, x+20, H*0.66, x+10, H*0.66-hgt);
+    }
+
+    // water / marsh band with reflection tint
+    const water = this.add.graphics();
+    water.fillGradientStyle(0x2a3d2e, 0x2a3d2e, 0x16321f, 0x16321f, 1);
+    water.fillRect(0, H*0.68, W, H*0.32);
+    // subtle water shimmer lines
+    this.shimmer = this.add.graphics();
+
+    // reeds foreground, both edges
+    for (let i=0;i<6;i++){
+      this.add.image(20+i*14, H-10, 'reed').setOrigin(0,1).setAlpha(0.85).setTint(0x0d1c12);
+    }
+    for (let i=0;i<6;i++){
+      this.add.image(W-20-i*14, H-10, 'reed').setOrigin(1,1).setAlpha(0.85).setTint(0x0d1c12);
+    }
+
+    // ---- Game state ----
+    this.score = 0;
+    this.round = 1;
+    this.lives = 3;
+    this.maxStones = 3;
+    this.stones = this.maxStones;
+    this.ducksPerRound = 3;
+    this.ducksSpawned = 0;
+    this.ducksResolved = 0;
+    this.activeDucks = new Set();
+    this.gameActive = false;
+    this.baseSpeed = 130;
+
+    // laughing dog, pops up from the reeds when the player misses
+    this.dog = this.add.sprite(W*0.5, H*0.95, 'dog_laugh1').setOrigin(0.5, 1).setVisible(false).setDepth(50);
+
+    this.updateHUD();
+
+    // crosshair-style pointer feedback (native cursor already crosshair)
+    this.input.on('pointerdown', (pointer) => this.handleShot(pointer));
+
+    document.getElementById('start-btn').addEventListener('click', () => this.startGame());
+  }
+
+  updateHUD(){
+    scoreEl.textContent = this.score;
+    roundEl.textContent = this.round;
+    stonesEl.textContent = '●'.repeat(Math.max(this.stones,0)) + '○'.repeat(Math.max(this.maxStones-this.stones,0));
+    livesEl.textContent = '♦'.repeat(Math.max(this.lives,0)) + ' '.repeat(0);
+  }
+
+  startGame(){
+    centerMsg.classList.add('hidden');
+    this.gameActive = true;
+    this.round = 1;
+    this.score = 0;
+    this.lives = 3;
+    this.updateHUD();
+    this.startRound();
+  }
+
+  startRound(){
+    this.ducksSpawned = 0;
+    this.ducksResolved = 0;
+    this.stones = this.maxStones;
+    this.updateHUD();
+    showBanner('Round ' + this.round);
+    this.spawnNextDuck();
+  }
+
+  spawnNextDuck(){
+    if (!this.gameActive) return;
+    if (this.ducksSpawned >= this.ducksPerRound) return;
+    this.ducksSpawned++;
+    this.time.delayedCall(this.ducksSpawned === 1 ? 300 : Phaser.Math.Between(400,1000), () => this.spawnDuck());
+  }
+
+  spawnDuck(){
+    if (!this.gameActive) return;
+    const fromLeft = Math.random() < 0.5;
+    const startX = fromLeft ? -40 : W+40;
+    const startY = Phaser.Math.Between(H*0.3, H*0.6);
+
+    const duck = this.add.container(startX, startY);
+
+    // body (wing-flap frames swap on this child)
+    duck.body = this.add.sprite(0, 0, 'duck_body_up');
+    // the real face, standing in as the duck's head, perched at the neck
+    duck.head = this.add.image(26, -2, 'player_guy').setScale(0.78);
+    duck.add([duck.body, duck.head]);
+
+    // facing direction: texture/head were drawn facing right, so flip via
+    // negative scaleX for leftward flight (mirrors both body and head together)
+    const facing = fromLeft ? 1 : -1;
+    duck.scaleX = facing * 1.1;
+    duck.scaleY = 1.1;
+
+    const speed = this.baseSpeed + (this.round-1)*22 + Phaser.Math.Between(-10,20);
+    const dir = fromLeft ? 1 : -1;
+    duck.vx = dir * speed;
+    duck.vy = Phaser.Math.FloatBetween(-18, 18);
+    duck.baseY = startY;
+    duck.t = Phaser.Math.FloatBetween(0, Math.PI*2);
+    duck.alive = true;
+    duck.hit = false;
+    duck.facing = facing;
+
+    // wing flap animation via texture swap on the body child
+    duck.flapEvent = this.time.addEvent({
+      delay: 110, loop:true, callback: () => {
+        if (!duck.alive) return;
+        duck.body.setTexture(duck.body.texture.key === 'duck_body_up' ? 'duck_body_down' : 'duck_body_up');
+      }
+    });
+
+    // hit target radius (a bit generous for accessibility)
+    duck.hitRadius = 34;
+
+    this.activeDucks.add(duck);
+
+    // safety: escape after time on screen too long
+    duck.escapeTimer = this.time.delayedCall(9000, () => {
+      if (duck.alive) this.duckEscaped(duck);
+    });
+
+    this.spawnNextDuck();
+  }
+
+  handleShot(pointer){
+    if (!this.gameActive) return;
+    if (this.stones <= 0) return;
+
+    this.stones--;
+    this.updateHUD();
+    playThrowSound();
+
+    // stone impact puff at click point
+    const burst = this.add.image(pointer.x, pointer.y, 'impact').setScale(0.6).setAlpha(0.9);
+    this.tweens.add({ targets: burst, scale:1.1, alpha:0, duration:180, onComplete: () => burst.destroy() });
+
+    let hitOne = null;
+    let bestDist = Infinity;
+    this.activeDucks.forEach(duck => {
+      if (!duck.alive) return;
+      const d = Phaser.Math.Distance.Between(pointer.x, pointer.y, duck.x, duck.y);
+      if (d < duck.hitRadius && d < bestDist){ bestDist = d; hitOne = duck; }
+    });
+
+    if (hitOne){
+      this.shootDuck(hitOne);
+    } else if (this.stones <= 0) {
+      this.checkRoundEndSoon();
+    }
+  }
+
+  shootDuck(duck){
+    duck.alive = false;
+    duck.hit = true;
+    duck.flapEvent.remove();
+    duck.escapeTimer.remove();
+    duck.body.setTexture('duck_body_fall');
+
+    this.score += 100 + this.round*10;
+    this.updateHUD();
+
+    // flash white briefly then tumble & drop (face spins along with it)
+    duck.body.setTint(0xffe9a8);
+    this.time.delayedCall(70, () => duck.body.clearTint());
+
+    this.tweens.add({
+      targets: duck,
+      y: H*0.72,
+      angle: duck.facing < 0 ? -260 : 260,
+      duration: 700,
+      ease: 'Cubic.easeIn',
+      onComplete: () => {
+        this.tweens.add({ targets:duck, alpha:0, duration:200, onComplete: () => {
+          duck.destroy();
+          this.activeDucks.delete(duck);
+          this.resolveDuck();
+        }});
+      }
+    });
+  }
+
+  duckEscaped(duck){
+    duck.alive = false;
+    duck.flapEvent.remove();
+    this.activeDucks.delete(duck);
+    this.tweens.add({ targets: duck, alpha:0, duration:300, onComplete: () => duck.destroy() });
+
+    this.lives--;
+    this.updateHUD();
+    this.showDog();
+    this.resolveDuck();
+
+    if (this.lives <= 0){
+      this.endGame();
+    }
+  }
+
+  showDog(){
+    // stop any laugh already in progress and reset
+    if (this.dog.laughEvent) this.dog.laughEvent.remove();
+    this.tweens.killTweensOf(this.dog);
+    if (this.dogBubble) this.dogBubble.destroy();
+
+    playDogLaughSound();
+
+    this.dog.setVisible(true);
+    this.dog.setAlpha(1);
+    this.dog.setScale(1);
+    this.dog.y = H + 20;
+    this.dog.setTexture('dog_laugh1');
+
+    // hop up out of the reeds
+    this.tweens.add({
+      targets: this.dog,
+      y: H*0.98,
+      duration: 260,
+      ease: 'Back.easeOut'
+    });
+
+    // little bounce while laughing, plus mouth-flap animation
+    this.tweens.add({
+      targets: this.dog,
+      scaleX: 1.06, scaleY: 0.94,
+      duration: 140,
+      yoyo: true,
+      repeat: 4,
+      ease: 'Sine.easeInOut'
+    });
+    this.dog.laughEvent = this.time.addEvent({
+      delay: 140, repeat: 6, callback: () => {
+        this.dog.setTexture(this.dog.texture.key === 'dog_laugh1' ? 'dog_laugh2' : 'dog_laugh1');
+      }
+    });
+
+    this.dogBubble = this.add.text(this.dog.x + 46, H*0.72, 'Ha! Ha! Ha!', {
+      fontFamily: 'Fredoka, sans-serif', fontSize: '19px', color: '#f4ecd8', fontStyle: '700'
+    }).setOrigin(0.5).setAlpha(0).setDepth(51);
+    this.tweens.add({ targets: this.dogBubble, alpha:1, y: H*0.66, duration: 250 });
+
+    // duck back down after a beat
+    this.time.delayedCall(1300, () => {
+      if (this.dog.laughEvent) this.dog.laughEvent.remove();
+      this.tweens.add({
+        targets: this.dog, y: H+20, duration: 260, ease: 'Back.easeIn',
+        onComplete: () => this.dog.setVisible(false)
+      });
+      if (this.dogBubble){
+        this.tweens.add({ targets: this.dogBubble, alpha:0, y:'-=10', duration:200, onComplete: () => {
+          this.dogBubble.destroy(); this.dogBubble = null;
+        }});
+      }
+    });
+  }
+
+  resolveDuck(){
+    this.ducksResolved++;
+    if (this.ducksResolved >= this.ducksPerRound){
+      this.checkRoundEndSoon(true);
+    }
+  }
+
+  checkRoundEndSoon(forceCheck){
+    // Called when stones hits 0 or all ducks resolved — decide if round truly over
+    if (this.activeDucks.size === 0 && this.ducksSpawned >= this.ducksPerRound){
+      if (this.lives > 0 && this.gameActive){
+        this.round++;
+        this.time.delayedCall(600, () => this.startRound());
+      }
+    } else if (this.stones <= 0 && this.activeDucks.size > 0){
+      // out of stones but ducks still flying — they will escape naturally, no extra action
+    }
+  }
+
+  endGame(){
+    this.gameActive = false;
+    this.activeDucks.forEach(d => { d.flapEvent && d.flapEvent.remove(); d.escapeTimer && d.escapeTimer.remove(); d.destroy(); });
+    this.activeDucks.clear();
+    if (this.dog.laughEvent) this.dog.laughEvent.remove();
+    if (this.dogBubble){ this.dogBubble.destroy(); this.dogBubble = null; }
+
+    document.querySelector('#center-msg .title').textContent = 'Hunt Over';
+    document.querySelector('#center-msg .sub').textContent = 'Final score: ' + this.score + '  ·  Reached round ' + this.round;
+    document.getElementById('start-btn').textContent = 'Gather more stones & try again';
+    centerMsg.classList.remove('hidden');
+  }
+
+  update(time, delta){
+    const dt = delta/1000;
+
+    // sun slowly drifts down toward horizon over the session for atmosphere
+    if (this.gameActive){
+      this.sun.y = Math.min(this.sun.y + dt*0.6, H*0.62);
+      this.sunGlow.y = this.sun.y;
+    }
+
+    this.clouds.forEach(c => {
+      c.x += c.speed*dt;
+      if (c.x > W+60) c.x = -60;
+    });
+
+    this.activeDucks.forEach(duck => {
+      if (!duck.alive) return;
+      duck.t += dt;
+      duck.x += duck.vx*dt;
+      duck.y = duck.baseY + Math.sin(duck.t*2.2)*26;
+
+      // gentle bank/flip correction based on direction (kept constant per flight)
+      if ((duck.vx > 0 && duck.x > W+60) || (duck.vx < 0 && duck.x < -60)){
+        // flew fully off screen without being shot — counts as escape
+        if (duck.escapeTimer) duck.escapeTimer.remove();
+        this.duckEscaped(duck);
+      }
+    });
+  }
+}
+
+const config = {
+  type: Phaser.AUTO,
+  width: W,
+  height: H,
+  parent: 'game',
+  backgroundColor: '#150d20',
+  pixelArt: true,
+  scene: DuskFlight
+};
+
+new Phaser.Game(config);
+</script>
+
+</body>
+</html>
